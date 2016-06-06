@@ -74,7 +74,7 @@ struct WiiButtons {
 //Helper class: represents Gamepad button presses (translated from Wii).
 struct WiiTransGamepad {
 	WiiTransGamepad() : dpadLeft(false), dpadRight(false), dpadUp(false), dpadDown(false),
-						btnOk(false), btnCancel(false), btnMenu(false)
+						btnOk(false), btnCancel(false), btnAux(false), btnMenu(false)
 						{}
 
 	bool dpadLeft;
@@ -83,6 +83,7 @@ struct WiiTransGamepad {
 	bool dpadDown;
 	bool btnOk;
 	bool btnCancel;
+	bool btnAux; //A on the d-pad side. Rarely used, but good to have mapped.
 	bool btnMenu;
 };
 
@@ -492,6 +493,7 @@ private:
     	//Check each key for keydown/up
     	check_keyupdown(oldGamepad.btnOk, currGamepad.btnOk, 0);
     	check_keyupdown(oldGamepad.btnCancel, currGamepad.btnCancel, 1);
+    	check_keyupdown(oldGamepad.btnAux, currGamepad.btnAux, 2);
     	check_keyupdown(oldGamepad.btnMenu, currGamepad.btnMenu, 3);
 
     	//Hats are slightly different in SDL.
@@ -596,6 +598,8 @@ private:
    			keycode = XK_T;
    		} else if (buttonId == 1) {
    			keycode = XK_R;
+   		} else if (buttonId == 2) {
+   			keycode = XK_F;
    		} else if (buttonId == 3) {
    			keycode = XK_E;
    		}
@@ -763,6 +767,7 @@ private:
 			currGamepad.dpadRight = remote.currButtons.dpadRight;
 			currGamepad.dpadUp = remote.currButtons.dpadUp;
 			currGamepad.dpadDown = remote.currButtons.dpadDown;
+			currGamepad.btnAux = remote.currButtons.btnA;
 			currGamepad.btnMenu = remote.currButtons.btnB;
 		}
 
