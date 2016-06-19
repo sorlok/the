@@ -676,6 +676,14 @@ private:
 				break;
 			}
 
+			//Basic buttons plus accelerometer
+			//NOTE: The cheap Wii Remotes can drop into data reporting mode 0x31 for some reason; we should react by nudging them back to 0x35.
+			case 0x31: {
+				proccess_buttons(remote, message);
+				proccess_accellerometer(remote, message+2);
+				break;
+			}
+
 			//Basic buttons plus 19 extension bytes.
 			/*case 0x34: {
 				proccess_buttons(remote, message);
