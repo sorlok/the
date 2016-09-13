@@ -1,13 +1,19 @@
+//Linux-only includes.
+#ifndef _WIN32
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#endif
+
 #include <iostream>
 
 #include "wii_remote.h"
 
 //Compile like so:
 // g++ -std=c++11  -o the main.cpp  -lbluetooth -pthread -lX11 -lXtst
+//Windows, "Native" command line, then:
+// cl  /EHsc /O2  Main.cpp   /link /OUT:The.exe /DYNAMICBASE "Hid.lib" "Setupapi.lib" "Ws2_32.lib" "User32.lib"
 //See bottom of file for licensing information.
 
 WiiRemoteMgr* wiiRemote = nullptr;
@@ -23,11 +29,13 @@ void on_kill(int s)
   exit(1); 
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   //Starts the thread.
   wiiRemote = new WiiRemoteMgr();
   
   //Set up Ctrl+C handler.
+  //This isn't needed on Windows, since the Wii Remote will always be paired even when the app is closed (need to manually remove it in the BT panel).
+#ifndef _WIN32
   struct sigaction sigIntHandler;
 
   sigIntHandler.sa_handler = on_kill;
@@ -35,6 +43,7 @@ int main() {
   sigIntHandler.sa_flags = 0;
 
   sigaction(SIGINT, &sigIntHandler, NULL);
+#endif
 
   //Wait for kill signal.
   //pause();
