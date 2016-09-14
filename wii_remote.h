@@ -121,14 +121,17 @@ public:
 
 	void shutdown() {
 		std::cout <<"WiiRemote: Shutdown start.\n";
-		running = false;
-		main_thread.join();
+		run_0 = false;
+		run_1 = false;
+		main_thread_0.join();
+		main_thread_1.join();
 		std::cout <<"WiiRemote: Shutdown complete.\n";
 	}
 
 	//TODO: Better design
 	void waitForDone() {
-		main_thread.join();
+		main_thread_0.join();
+		main_thread_1.join();
 	}
 
 	//Get the step count and clear it.
@@ -149,7 +152,7 @@ protected:
 	//Find the Window!
 	bool WiiRemoteMgr::findWindow();
 
-	void run_main() {
+	void run_main_init() {
 		std::cout <<"WiiRemote: Connect start.\n";
 		if (!findWindow()) {
 			return;
@@ -157,18 +160,33 @@ protected:
 		if (!connect()) {
 			return;
 		}
+	}
+
+	void run_main(int id) {
+		std::shared_ptr<WiiRemote> remote = remotes[id];
+		std::atomic<bool>& running = (id==0 ? run_0 : run_1);
+		std::atomic<int>& leds = (id==0 ? leds_0 : leds_1);
+
+		//Set high priority
+		if (SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) == TRUE) {
+			std::cout <<"Set process priority\n";
+		} else {
+			std::cout <<"ERROR: Couldn't set process priority\n";
+		}
 
 		std::cout <<"WiiRemote: At start of main loop.\n";
+		WiiTransGamepad currGamepad;
+		HatState lastHat;
 		while (running.load()) {
-			for (std::shared_ptr<WiiRemote>& remote : remotes) {
-				sendPending(*remote);
-			}
+			sendPending(*remote, leds);
 			WiiTransGamepad oldGamepad = currGamepad;
-			poll();
-			pushKeys(oldGamepad);
+			poll(*remote, currGamepad, running);
+			pushKeys(oldGamepad, currGamepad, lastHat);
 
 			//Relinquish control (next Wii input comes in after 10ms)
+#ifndef _WIN32 //...but Windows is so bad at waiting "a little"
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
 		}
 
 		disconnect();
@@ -247,7 +265,13 @@ private:
 	}
 
 
-	void sendPending(WiiRemote& remote) {
+	void sendPending(WiiRemote& remote, std::atomic<int>& leds) {
+		//Waiting on LEDs?
+		int newLEDs = leds.exchange(0);
+		if (newLEDs != 0) {
+		  send_leds(remote, newLEDs&0x8, newLEDs&0x4, newLEDs&0x2, newLEDs&0x1);
+		}
+
 		//Send out pending data?
 		if (!remote.waitingOnData && !remote.requests.empty()) {
 			//Get the next request.
@@ -303,11 +327,11 @@ private:
 	}
 
 	//Dispatch any pending activity to handle_event()
-	void poll();
+	void poll(WiiRemote& remote, WiiTransGamepad& currGamepad, std::atomic<bool>& running);
 
 
 
-    void pushKeys(const WiiTransGamepad& oldGamepad) {
+    void pushKeys(const WiiTransGamepad& oldGamepad, WiiTransGamepad& currGamepad, HatState& lastHat) {
     	//Check each key for keydown/up
     	check_keyupdown(oldGamepad.btnOk, currGamepad.btnOk, 0);
     	check_keyupdown(oldGamepad.btnCancel, currGamepad.btnCancel, 1);
@@ -315,13 +339,10 @@ private:
     	check_keyupdown(oldGamepad.btnMenu, currGamepad.btnMenu, 3);
 
     	//Hats are slightly different in SDL.
-    	check_hatupdown(currGamepad.dpadLeft, currGamepad.dpadRight, currGamepad.dpadUp, currGamepad.dpadDown, 0);
-
-    	
-
+    	check_hatupdown(lastHat, currGamepad.dpadLeft, currGamepad.dpadRight, currGamepad.dpadUp, currGamepad.dpadDown, 0);
     }
 
-    void check_hatupdown(bool pressLeft, bool pressRight, bool pressUp, bool pressDown, uint8_t hatId) {
+    void check_hatupdown(HatState& lastHat, bool pressLeft, bool pressRight, bool pressUp, bool pressDown, uint8_t hatId) {
     	//Hats are weird. (Note: This approach may lead to bogus values (0xF), but mkxp can probably handle it.)
     	HatState newHat;
     	if (pressLeft) {
@@ -437,14 +458,14 @@ private:
 	////////////////////////
 	//TODO: We should check that we actually read the correct amount of data.
 	////////////////////////
-	void handle_event(WiiRemote& remote, unsigned char eventType, unsigned char* message) {
+	void handle_event(WiiRemote& remote, WiiTransGamepad& currGamepad, unsigned char eventType, unsigned char* message, std::atomic<bool>& running) {
 //std::cout <<"From remote: " <<remote.bdaddr_str <<" got event: " <<std::hex <<int(eventType) <<"\n";
 
 		switch (eventType) {
 			//Status response
 			case 0x20: {
 				//Always process buttons.
-				proccess_buttons(remote, message);
+				proccess_buttons(remote, currGamepad, message);
 
 				//Now read the status information.
 				process_status_response(remote, message+2);
@@ -455,10 +476,10 @@ private:
 			//Memory/Register data reporting.
 			case 0x21: {
 				//We must process button data here, as regular input reporting is suspended during an EEPROM read.
-				proccess_buttons(remote, message);
+				proccess_buttons(remote, currGamepad, message);
 
 				//Now handle the rest of the data.
-				process_read_data(remote, message+2);
+				process_read_data(remote, message+2, running);
 
 				//Finally, re-send data reporting mode (some 3rd-party remotes can flake out here)
 				send_data_reporting(remote, true, 0x35);
@@ -480,14 +501,14 @@ private:
 
 			//Basic buttons only.
 			case 0x30: {
-				proccess_buttons(remote, message);
+				proccess_buttons(remote, currGamepad, message);
 				break;
 			}
 
 			//Basic buttons plus accelerometer
 			//NOTE: The cheap Wii Remotes can drop into data reporting mode 0x31 for some reason; we should react by nudging them back to 0x35.
 			case 0x31: {
-				proccess_buttons(remote, message);
+				proccess_buttons(remote, currGamepad, message);
 				proccess_accellerometer(remote, message+2);
 				break;
 			}
@@ -501,7 +522,7 @@ private:
 
 			//Basic buttons plus accelerometer plus 16 extension bytes.
 			case 0x35: {
-				proccess_buttons(remote, message);
+				proccess_buttons(remote, currGamepad, message);
 				proccess_accellerometer(remote, message+2);
 				break;
 			}
@@ -522,7 +543,7 @@ private:
 	}
 
 
-	void proccess_buttons(WiiRemote& remote, unsigned char* btns) {
+	void proccess_buttons(WiiRemote& remote, WiiTransGamepad& currGamepad, unsigned char* btns) {
 		//First byte.
 		remote.currButtons.dpadLeft  = (btns[0]&0x01);
 		remote.currButtons.dpadRight = (btns[0]&0x02);
@@ -541,9 +562,11 @@ private:
 		//Plus resets the controller affinity.
 		if (remote.currButtons.plus && currAffinity >= 0) {
 			//Reset LEDs.
-			for (std::shared_ptr<WiiRemote>& rm : remotes) {
-				send_leds(*rm, true, true, true, true);
-			}
+			leds_0 = 0xF;
+			leds_1 = 0xF;
+			//for (std::shared_ptr<WiiRemote>& rm : remotes) {
+			//	send_leds(*rm, true, true, true, true);
+			//}
 			currAffinity = -1;
 			currGamepad = WiiTransGamepad();
 			return;
@@ -565,13 +588,15 @@ private:
 			}
 
 			//Set LEDs based on affinity.
-			for (std::shared_ptr<WiiRemote>& rm : remotes) {
+			leds_0 = (currAffinity==0 ? 0x8 : 0x4);
+			leds_1 = (currAffinity==0 ? 0x4 : 0x8);
+			/*for (std::shared_ptr<WiiRemote>& rm : remotes) {
 				if (rm->id == currAffinity) {
 				  send_leds(*rm, true, false, false, false);
 				} else {
 				  send_leds(*rm, false, true, false, false);
 				}
-			}
+			}*/
 		}
 
 		//Now add input based on this remote's affinity.
@@ -734,7 +759,7 @@ private:
 	}
 
 
-	void process_read_data(WiiRemote& remote, unsigned char* btns) {
+	void process_read_data(WiiRemote& remote, unsigned char* btns, std::atomic<bool>& running) {
 		//Get the error state
 		int err = btns[0]&0xF;
 		if (err != 0) {
@@ -758,7 +783,7 @@ private:
 
 		//Now dispatch based on the handshake we are currently waiting for.
 		if (!remote.handshake_calib) {
-			finish_handshake_calib(remote, memOffset, size, btns+3);
+			finish_handshake_calib(remote, memOffset, size, btns+3, running);
 			remote.handshake_calib = true;
 		} else {
 			std::cout <<"Error: received data when not waiting for a handshake.\n";
@@ -771,7 +796,7 @@ private:
 	}
 
 
-	void finish_handshake_calib(WiiRemote& remote, unsigned short memOffset, unsigned short size, unsigned char* memory) {
+	void finish_handshake_calib(WiiRemote& remote, unsigned short memOffset, unsigned short size, unsigned char* memory, std::atomic<bool>& running) {
 		//Sanity check.
 		if (memOffset != 0x16) {
 			std::cout <<"Error: handshake calibration on unexpected memory address: " <<memOffset <<"\n";
@@ -825,13 +850,13 @@ private:
 
 private:
 	//The current buttons, translated to "Gamepad" functionality.
-	WiiTransGamepad currGamepad;
+	//WiiTransGamepad currGamepad;
 
 	//Current controller affinity
 	//  -1 = unknown (4 LEDs)
 	//   0 = first remote is RHS  (Accept/Cancel)
 	//   1 = second remote is RHS (Accept/Cancel)
-	int currAffinity;
+	std::atomic<int> currAffinity;
 
 	//Current step count (since last check).
 	std::atomic<int> currStepCount;
@@ -844,16 +869,23 @@ private:
 	bool sdlKnowsJoystick;
 
 	//Last hat value sent (kind of a hack)
-	HatState lastHat;
+	//HatState lastHat;
 
-	//Holds the main loop
-	std::thread main_thread;
+	//Holds the main loop for each controller.
+	std::thread main_thread_0;
+	std::thread main_thread_1;
 
 	//Holds our set of Wii Remotes.
 	std::vector<std::shared_ptr<WiiRemote>> remotes;
 
 	//Used to flag the main loop to stop.
-	std::atomic<bool> running;
+	std::atomic<bool> run_0;
+	std::atomic<bool> run_1;
+
+	//Ask the main thread to reset its LEDs (1,2,3,4 as 0x8, 0x4, 0x2, 0x1). If 0, means "nothing to set"
+	std::atomic<int> leds_0;
+	std::atomic<int> leds_1;
+
 
 #define POWER_WORD_CLASSDEF_WII_MGR
 	#include "platform.h"

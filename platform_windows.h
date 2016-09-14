@@ -13,6 +13,7 @@
 #include <string>
 
 //Also define relevant keycodes here
+/*
 #define MyKey_Left VK_LEFT
 #define MyKey_Right VK_RIGHT
 #define MyKey_Up VK_UP
@@ -21,6 +22,17 @@
 #define MyKey_R 0x52
 #define MyKey_E 0x45
 #define MyKey_F 0x46
+*/
+
+//Defines for RPG Maker
+#define MyKey_Left  0x48 //H
+#define MyKey_Right 0x4C //L
+#define MyKey_Up    0x4B //K
+#define MyKey_Down  0x4A //J
+#define MyKey_F 0x46 //N/A
+#define MyKey_T 0x5A //Z
+#define MyKey_E 0x58 //X
+#define MyKey_R 0x58 //X
 
 // 128 bit GUID to human-readable string 
 std::string guid_to_str(const GUID& id) {
@@ -52,9 +64,18 @@ std::string guid_to_str(const GUID& id) {
 
 //Actual implementation of functions
 #ifdef POWER_WORD_IMPLEMENTL
-	WiiRemoteMgr::WiiRemoteMgr() : currAffinity(-1), currStepCount(0), batteryStatusRHS(0), batteryStatusLHS(0), sdlKnowsJoystick(false), running(true) {
-		//Start up the main thread.
-		main_thread = std::thread(&WiiRemoteMgr::run_main, this);
+	WiiRemoteMgr::WiiRemoteMgr() : currAffinity(-1), currStepCount(0), batteryStatusRHS(0), batteryStatusLHS(0), sdlKnowsJoystick(false), 
+	  run_0(true), run_1(true), leds_0(0), leds_1(0)
+	{
+		//Initialize all connections.
+		//main_thread = std::thread(&WiiRemoteMgr::run_main, this);
+		run_main_init();
+
+		//Start all threads.
+		if (remotes.size() == 2) {
+			main_thread_0 = std::thread(&WiiRemoteMgr::run_main, this, 0);
+			main_thread_1 = std::thread(&WiiRemoteMgr::run_main, this, 1);
+		}
 	}
 
 	//Shouldn't matter; we always have access to SendInput
@@ -135,8 +156,8 @@ std::string guid_to_str(const GUID& id) {
 	//Because of the heavy-handed way that Windows handles bluetooth devices, we actually have everything we need already, so this is a no-op.
 	bool WiiRemoteMgr::btconnect(WiiRemote& remote) { return true; }
 
-	void WiiRemoteMgr::poll() {
-		for (std::shared_ptr<WiiRemote>& remote : remotes) {
+	void WiiRemoteMgr::poll(WiiRemote& remote, WiiTransGamepad& currGamepad, std::atomic<bool>& running) {
+		//for (std::shared_ptr<WiiRemote>& remote : remotes) {
 			OVERLAPPED hid_overlap_read = OVERLAPPED();
 			hid_overlap_read.hEvent = CreateEvent(nullptr, true, false, nullptr);
 
@@ -146,12 +167,12 @@ std::string guid_to_str(const GUID& id) {
 
 			DWORD bytes = 0;
 			ResetEvent(hid_overlap_read.hEvent);
-			if (ReadFile(remote->handle, buff + 1, 32 - 1, &bytes, &hid_overlap_read) != TRUE)
+			if (ReadFile(remote.handle, buff + 1, 32 - 1, &bytes, &hid_overlap_read) != TRUE)
 			{
 				if (GetLastError() == ERROR_IO_PENDING)
 				{
 					//Actual overlap error.
-					if (GetOverlappedResult(remote->handle, &hid_overlap_read, &bytes, TRUE) != TRUE)
+					if (GetOverlappedResult(remote.handle, &hid_overlap_read, &bytes, TRUE) != TRUE)
 					{
 						if (GetLastError() == ERROR_OPERATION_ABORTED)
 						{
@@ -168,7 +189,7 @@ std::string guid_to_str(const GUID& id) {
 					if (hid_overlap_read.Internal == STATUS_PENDING)
 					{
 						std::cout << "ERROR: Request was pending...\n";
-						CancelIo(remote->handle);
+						CancelIo(remote.handle);
 						return;
 					}
 				} 
@@ -183,12 +204,14 @@ std::string guid_to_str(const GUID& id) {
 			//std::cout << "Read " << len << "bytes\n";
 
 			//What kind of message was it?
-			handle_event(*remote, buff[1], buff + 2);
-		}
+			handle_event(remote, currGamepad, buff[1], buff + 2, running);
+		//}
 	}
 
 	//TODO:
 	void WiiRemoteMgr::send_key(unsigned int keycode, bool isPressed) {
+//std::cout <<"SEND: " <<keycode <<" : " <<isPressed <<"\n";
+
 		INPUT input;
 		KEYBDINPUT kInput;
 		kInput.wVk = keycode;
